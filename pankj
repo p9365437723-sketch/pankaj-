@@ -1,0 +1,1490 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { 
+  signOut, 
+  onAuthStateChanged, 
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signInWithPopup,
+  GoogleAuthProvider
+} from 'firebase/auth';
+import { 
+  collection, 
+  addDoc, 
+  getDocs, 
+  doc, 
+  updateDoc, 
+  deleteDoc, 
+  query, 
+  where,
+  onSnapshot,
+  setDoc,
+  getDoc,
+  writeBatch
+} from 'firebase/firestore';
+import { auth, db } from './firebase';
+
+// ===== MAIN APP COMPONENT =====
+export default function PankajStudyHub() {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [userRole, setUserRole] = useState(null);
+  const [isBlocked, setIsBlocked] = useState(false);
+
+  // Check authentication on mount
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (currentUser) {
+        // Check user data in Firestore
+        const userRef = doc(db, 'users', currentUser.uid);
+        const userSnap = await getDoc(userRef);
+        
+        if (userSnap.exists()) {
+          const userData = userSnap.data();
+          
+          // Check if user is blocked
+          if (userData.isBlocked) {
+            setIsBlocked(true);
+            setUser(null);
+            setUserRole(null);
+            setLoading(false);
+            return;
+          }
+          
+          setUserRole(userData.role);
+          setUser(currentUser);
+        }
+      } else {
+        setUser(null);
+        setUserRole(null);
+      }
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  if (loading) {
+    return <LoadingScreen />;
+  }
+
+  if (isBlocked) {
+    return <BlockedScreen />;
+  }
+
+  // Not logged in - show auth
+  if (!user) {
+    return <AuthPage />;
+  }
+
+  // Admin dashboard
+  if (userRole === 'admin') {
+    return <AdminDashboard user={user} />;
+  }
+
+  // Student dashboard
+  if (userRole === 'student') {
+    return <StudentDashboard user={user} />;
+  }
+
+  return <LoadingScreen />;
+}
+
+// ===== LOADING SCREEN =====
+function LoadingScreen() {
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-emerald-900 to-slate-900 flex items-center justify-center">
+      <div className="text-center">
+        <div className="inline-block">
+          <div className="w-16 h-16 border-4 border-emerald-400/30 border-t-emerald-400 rounded-full animate-spin mb-6"></div>
+        </div>
+        <h2 className="text-2xl font-bold text-white mb-2">Pankaj Sir Study Hub</h2>
+        <p className="text-emerald-300">Loading your dashboard...</p>
+      </div>
+    </div>
+  );
+}
+
+// ===== BLOCKED SCREEN =====
+function BlockedScreen() {
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-red-900 to-slate-900 flex items-center justify-center px-4">
+      <div className="max-w-md text-center bg-slate-800/50 backdrop-blur-xl rounded-3xl p-8 border border-red-400/20">
+        <div className="text-5xl mb-6">🚫</div>
+        <h2 className="text-2xl font-bold text-white mb-3">Account Restricted</h2>
+        <p className="text-red-300 mb-6">Your account has been restricted by the admin. Please contact support.</p>
+        <button 
+          onClick={() => signOut(auth)}
+          className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-xl transition"
+        >
+          Logout
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ===== AUTH PAGE =====
+function AuthPage() {
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
+  const [adminId, setAdminId] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [useAdminLogin, setUseAdminLogin] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [isEmailVerified, setIsEmailVerified] = useState(false);
+
+  const googleProvider = new GoogleAuthProvider();
+
+  // Student Sign Up
+  const handleStudentSignUp = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+
+    try {
+      const result = await createUserWithEmailAndPassword(auth, email, password);
+      
+      // Send verification email
+      // await sendEmailVerification(result.user);
+      
+      // Create user document
+      await setDoc(doc(db, 'users', result.user.uid), {
+        name: name,
+        email: email,
+        role: 'student',
+        provider: 'email',
+        createdAt: new Date(),
+        lastLogin: new Date(),
+        isBlocked: false,
+        isEmailVerified: false
+      });
+
+      setEmail('');
+      setPassword('');
+      setName('');
+      setIsSignUp(false);
+      alert('Signup successful! Please login.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Student Login
+  const handleStudentLogin = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+
+    try {
+      const result = await signInWithEmailAndPassword(auth, email, password);
+      
+      // Update last login
+      await updateDoc(doc(db, 'users', result.user.uid), {
+        lastLogin: new Date()
+      });
+
+      setEmail('');
+      setPassword('');
+    } catch (err) {
+      setError('Invalid email or password');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Google Sign In
+  const handleGoogleSignIn = async () => {
+    setError('');
+    setLoading(true);
+
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      const userRef = doc(db, 'users', result.user.uid);
+      const userSnap = await getDoc(userRef);
+
+      if (!userSnap.exists()) {
+        await setDoc(userRef, {
+          name: result.user.displayName,
+          email: result.user.email,
+          role: 'student',
+          provider: 'google',
+          createdAt: new Date(),
+          lastLogin: new Date(),
+          isBlocked: false
+        });
+      } else {
+        await updateDoc(userRef, {
+          lastLogin: new Date()
+        });
+      }
+    } catch (err) {
+      setError('Google sign-in failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Admin Login
+  const handleAdminLogin = async (e) => {
+    e.preventDefault();
+    setError('');
+
+    if (adminId === 'p936543773' && adminPassword === '9365437723') {
+      // Create/update admin session
+      const adminUser = {
+        uid: 'admin-' + Date.now(),
+        email: 'admin@pankajalacademy.com',
+        role: 'admin'
+      };
+
+      // Simulate admin login
+      const adminDocRef = doc(db, 'users', 'admin-default');
+      await setDoc(adminDocRef, {
+        name: 'Admin',
+        email: 'admin@pankajalacademy.com',
+        role: 'admin',
+        provider: 'admin',
+        createdAt: new Date(),
+        lastLogin: new Date(),
+        isBlocked: false
+      }, { merge: true });
+
+      // Set admin session
+      localStorage.setItem('adminSession', JSON.stringify(adminUser));
+      setAdminId('');
+      setAdminPassword('');
+      
+      // Trigger re-render
+      window.location.reload();
+    } else {
+      setError('Invalid admin credentials');
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-emerald-900 to-slate-900 flex items-center justify-center px-4 py-8">
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-20 left-10 w-72 h-72 bg-emerald-400/5 rounded-full blur-3xl"></div>
+        <div className="absolute bottom-20 right-10 w-72 h-72 bg-blue-400/5 rounded-full blur-3xl"></div>
+      </div>
+
+      <div className="relative max-w-md w-full">
+        {/* Logo */}
+        <div className="text-center mb-8">
+          <h1 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-300 to-blue-300 mb-2">
+            🎓 Pankaj Sir
+          </h1>
+          <p className="text-emerald-300 text-sm font-semibold">Study Hub</p>
+        </div>
+
+        {/* Main Card */}
+        <div className="bg-slate-800/40 backdrop-blur-2xl border border-emerald-400/20 rounded-3xl p-8 shadow-2xl">
+          {/* Tab Selection */}
+          <div className="flex gap-2 mb-8">
+            <button
+              onClick={() => { setUseAdminLogin(false); setIsSignUp(false); setError(''); }}
+              className={`flex-1 py-3 rounded-xl font-bold transition ${
+                !useAdminLogin && !isSignUp
+                  ? 'bg-emerald-500/80 text-white'
+                  : 'bg-slate-700/30 text-slate-300 hover:bg-slate-700/50'
+              }`}
+            >
+              Login
+            </button>
+            <button
+              onClick={() => { setUseAdminLogin(false); setIsSignUp(true); setError(''); }}
+              className={`flex-1 py-3 rounded-xl font-bold transition ${
+                !useAdminLogin && isSignUp
+                  ? 'bg-emerald-500/80 text-white'
+                  : 'bg-slate-700/30 text-slate-300 hover:bg-slate-700/50'
+              }`}
+            >
+              Sign Up
+            </button>
+            <button
+              onClick={() => { setUseAdminLogin(true); setError(''); }}
+              className={`flex-1 py-3 rounded-xl font-bold transition ${
+                useAdminLogin
+                  ? 'bg-red-500/80 text-white'
+                  : 'bg-slate-700/30 text-slate-300 hover:bg-slate-700/50'
+              }`}
+            >
+              Admin
+            </button>
+          </div>
+
+          {/* Error Message */}
+          {error && (
+            <div className="bg-red-500/20 border border-red-400/50 text-red-200 px-4 py-3 rounded-lg mb-6 text-sm">
+              {error}
+            </div>
+          )}
+
+          {/* Admin Login */}
+          {useAdminLogin ? (
+            <form onSubmit={handleAdminLogin} className="space-y-5">
+              <div>
+                <label className="block text-emerald-300 text-sm font-bold mb-2">Admin ID</label>
+                <input
+                  type="text"
+                  value={adminId}
+                  onChange={(e) => setAdminId(e.target.value)}
+                  placeholder="p936543773"
+                  className="w-full bg-slate-700/50 border border-emerald-400/30 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-400 focus:bg-slate-700/70 transition"
+                />
+              </div>
+              <div>
+                <label className="block text-emerald-300 text-sm font-bold mb-2">Password</label>
+                <input
+                  type="password"
+                  value={adminPassword}
+                  onChange={(e) => setAdminPassword(e.target.value)}
+                  placeholder="9365437723"
+                  className="w-full bg-slate-700/50 border border-emerald-400/30 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-400 focus:bg-slate-700/70 transition"
+                />
+              </div>
+              <button
+                type="submit"
+                className="w-full bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white font-bold py-3 rounded-xl transition transform hover:scale-105"
+              >
+                {loading ? 'Logging in...' : 'Admin Login'}
+              </button>
+            </form>
+          ) : /* Student Sign Up */
+          isSignUp ? (
+            <form onSubmit={handleStudentSignUp} className="space-y-5">
+              <div>
+                <label className="block text-emerald-300 text-sm font-bold mb-2">Full Name</label>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Your name"
+                  required
+                  className="w-full bg-slate-700/50 border border-emerald-400/30 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-400 focus:bg-slate-700/70 transition"
+                />
+              </div>
+              <div>
+                <label className="block text-emerald-300 text-sm font-bold mb-2">Email</label>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="your@email.com"
+                  required
+                  className="w-full bg-slate-700/50 border border-emerald-400/30 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-400 focus:bg-slate-700/70 transition"
+                />
+              </div>
+              <div>
+                <label className="block text-emerald-300 text-sm font-bold mb-2">Password</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  required
+                  className="w-full bg-slate-700/50 border border-emerald-400/30 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-400 focus:bg-slate-700/70 transition"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white font-bold py-3 rounded-xl transition transform hover:scale-105 disabled:opacity-50"
+              >
+                {loading ? 'Creating account...' : 'Sign Up'}
+              </button>
+            </form>
+          ) : /* Student Login */
+          (
+            <form onSubmit={handleStudentLogin} className="space-y-5">
+              <div>
+                <label className="block text-emerald-300 text-sm font-bold mb-2">Email</label>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="your@email.com"
+                  required
+                  className="w-full bg-slate-700/50 border border-emerald-400/30 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-400 focus:bg-slate-700/70 transition"
+                />
+              </div>
+              <div>
+                <label className="block text-emerald-300 text-sm font-bold mb-2">Password</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  required
+                  className="w-full bg-slate-700/50 border border-emerald-400/30 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-400 focus:bg-slate-700/70 transition"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white font-bold py-3 rounded-xl transition transform hover:scale-105 disabled:opacity-50"
+              >
+                {loading ? 'Logging in...' : 'Login'}
+              </button>
+            </form>
+          )}
+
+          {/* Divider */}
+          {!useAdminLogin && (
+            <>
+              <div className="flex items-center gap-3 my-6">
+                <div className="flex-1 h-px bg-emerald-400/20"></div>
+                <span className="text-slate-400 text-xs">OR</span>
+                <div className="flex-1 h-px bg-emerald-400/20"></div>
+              </div>
+
+              {/* Google Sign In */}
+              <button
+                onClick={handleGoogleSignIn}
+                disabled={loading}
+                className="w-full bg-white/10 hover:bg-white/20 border border-white/20 text-white font-bold py-3 rounded-xl transition flex items-center justify-center gap-3"
+              >
+                <span className="text-xl">🔤</span>
+                Sign in with Google
+              </button>
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <p className="text-center text-slate-400 text-xs mt-8">
+          © 2026 Pankaj Digital Academy. Built for SEBA Excellence.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ===== STUDENT DASHBOARD =====
+function StudentDashboard({ user }) {
+  const [step, setStep] = useState(1); // 1: Class, 2: Subject, 3: Chapter
+  const [selectedClass, setSelectedClass] = useState(null);
+  const [selectedSubject, setSelectedSubject] = useState(null);
+  const [selectedChapter, setSelectedChapter] = useState(null);
+  const [showChapter, setShowChapter] = useState(false);
+  const [subjects, setSubjects] = useState([]);
+  const [chapters, setChapters] = useState([]);
+  const [chapterContent, setChapterContent] = useState(null);
+  const [activeTab, setActiveTab] = useState('notes');
+  const [quizAnswers, setQuizAnswers] = useState({});
+  const [quizSubmitted, setQuizSubmitted] = useState(false);
+  const [quizScore, setQuizScore] = useState(0);
+
+  const classes = [
+    { id: '9', name: 'Class 9', icon: '📚' },
+    { id: '10', name: 'Class 10', icon: '📖' }
+  ];
+
+  const subjectsByClass = {
+    '9': ['English', 'Hindi', 'Science', 'Social Science'],
+    '10': ['English', 'Hindi', 'Science', 'Social Science']
+  };
+
+  // Load subjects when class is selected
+  useEffect(() => {
+    if (selectedClass) {
+      setSubjects(subjectsByClass[selectedClass] || []);
+      setStep(2);
+    }
+  }, [selectedClass]);
+
+  // Load chapters from Firestore
+  useEffect(() => {
+    if (selectedSubject && selectedClass) {
+      const q = query(
+        collection(db, 'chapters'),
+        where('class', '==', selectedClass),
+        where('subject', '==', selectedSubject)
+      );
+
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        setChapters(snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        })));
+      });
+
+      setStep(3);
+      return () => unsubscribe();
+    }
+  }, [selectedSubject, selectedClass]);
+
+  // Load chapter content
+  const loadChapterContent = async (chapterId) => {
+    try {
+      const chapterRef = doc(db, 'chapters', chapterId);
+      const chapterSnap = await getDoc(chapterRef);
+      
+      if (chapterSnap.exists()) {
+        setChapterContent({
+          id: chapterId,
+          ...chapterSnap.data()
+        });
+        setSelectedChapter(chapterId);
+        setShowChapter(true);
+        setActiveTab('notes');
+        setQuizAnswers({});
+        setQuizSubmitted(false);
+        setQuizScore(0);
+      }
+    } catch (err) {
+      console.error('Error loading chapter:', err);
+    }
+  };
+
+  // Handle quiz submission
+  const handleQuizSubmit = () => {
+    if (!chapterContent?.quiz) return;
+
+    let score = 0;
+    const quiz = chapterContent.quiz;
+
+    Object.keys(quizAnswers).forEach((qIndex) => {
+      const qIdx = parseInt(qIndex);
+      if (quiz[qIdx] && quiz[qIdx].correctAnswer === quizAnswers[qIdx]) {
+        score++;
+      }
+    });
+
+    setQuizScore(score);
+    setQuizSubmitted(true);
+  };
+
+  const handleLogout = async () => {
+    await signOut(auth);
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-emerald-900 to-slate-900">
+      {/* Header */}
+      <div className="bg-slate-800/50 backdrop-blur-xl border-b border-emerald-400/20 sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="text-3xl">🎓</span>
+            <div>
+              <h1 className="text-xl font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-300 to-blue-300">
+                Pankaj Sir Study Hub
+              </h1>
+              <p className="text-xs text-emerald-300">{user?.email}</p>
+            </div>
+          </div>
+          <button
+            onClick={handleLogout}
+            className="bg-red-600/80 hover:bg-red-700 text-white px-6 py-2 rounded-lg font-bold transition"
+          >
+            Logout
+          </button>
+        </div>
+      </div>
+
+      <div className="max-w-7xl mx-auto px-6 py-12">
+        {!showChapter ? (
+          <>
+            {/* Step 1: Choose Class */}
+            {step === 1 && (
+              <div className="mb-12">
+                <h2 className="text-3xl font-bold text-white mb-8">📚 Choose Your Class</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {classes.map((cls) => (
+                    <button
+                      key={cls.id}
+                      onClick={() => setSelectedClass(cls.id)}
+                      className="group bg-gradient-to-br from-emerald-500/20 to-blue-500/20 hover:from-emerald-500/40 hover:to-blue-500/40 border border-emerald-400/40 rounded-2xl p-8 transition transform hover:scale-105 hover:shadow-2xl"
+                    >
+                      <div className="text-6xl mb-4">{cls.icon}</div>
+                      <h3 className="text-2xl font-bold text-white">{cls.name}</h3>
+                      <p className="text-emerald-300 mt-2">Start learning today</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Step 2: Choose Subject */}
+            {step === 2 && (
+              <div className="mb-12">
+                <button
+                  onClick={() => {
+                    setStep(1);
+                    setSelectedClass(null);
+                    setSelectedSubject(null);
+                  }}
+                  className="mb-6 text-emerald-300 hover:text-emerald-200 flex items-center gap-2 font-bold"
+                >
+                  ← Back to Classes
+                </button>
+                <h2 className="text-3xl font-bold text-white mb-8">📖 Choose Your Subject</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {subjects.map((subject) => (
+                    <button
+                      key={subject}
+                      onClick={() => setSelectedSubject(subject)}
+                      className="bg-gradient-to-br from-emerald-500/20 to-blue-500/20 hover:from-emerald-500/40 hover:to-blue-500/40 border border-emerald-400/40 rounded-xl p-6 transition transform hover:scale-105 text-center"
+                    >
+                      <p className="text-white font-bold">{subject}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Step 3: Choose Chapter */}
+            {step === 3 && (
+              <div className="mb-12">
+                <button
+                  onClick={() => {
+                    setStep(2);
+                    setSelectedSubject(null);
+                    setChapters([]);
+                  }}
+                  className="mb-6 text-emerald-300 hover:text-emerald-200 flex items-center gap-2 font-bold"
+                >
+                  ← Back to Subjects
+                </button>
+                <h2 className="text-3xl font-bold text-white mb-8">📚 Choose Chapter - {selectedSubject}</h2>
+                
+                {chapters.length === 0 ? (
+                  <div className="bg-slate-800/50 border border-emerald-400/20 rounded-2xl p-12 text-center">
+                    <p className="text-slate-400 text-lg">No chapters available yet for this subject.</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {chapters.map((chapter) => (
+                      <button
+                        key={chapter.id}
+                        onClick={() => loadChapterContent(chapter.id)}
+                        className="group bg-gradient-to-br from-emerald-500/20 to-blue-500/20 hover:from-emerald-500/40 hover:to-blue-500/40 border border-emerald-400/40 hover:border-emerald-400/80 rounded-xl p-6 transition transform hover:scale-105 text-left hover:shadow-2xl"
+                      >
+                        <h3 className="text-lg font-bold text-white mb-2">{chapter.title}</h3>
+                        <p className="text-emerald-300 text-sm">Chapter {chapter.chapterNumber}</p>
+                        <div className="mt-4 flex gap-2 flex-wrap">
+                          <span className="text-xs bg-emerald-500/20 text-emerald-300 px-2 py-1 rounded">📝 Notes</span>
+                          <span className="text-xs bg-blue-500/20 text-blue-300 px-2 py-1 rounded">❓ Quiz</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        ) : (
+          // Chapter View
+          <div>
+            <button
+              onClick={() => {
+                setShowChapter(false);
+                setStep(3);
+              }}
+              className="mb-6 text-emerald-300 hover:text-emerald-200 flex items-center gap-2 font-bold"
+            >
+              ← Back to Chapters
+            </button>
+
+            <div className="bg-slate-800/50 backdrop-blur-xl border border-emerald-400/20 rounded-2xl overflow-hidden shadow-2xl">
+              {/* Chapter Header */}
+              <div className="bg-gradient-to-r from-emerald-600/30 to-blue-600/30 border-b border-emerald-400/20 p-8">
+                <h1 className="text-4xl font-black text-white mb-2">{chapterContent?.title}</h1>
+                <p className="text-emerald-300">Chapter {chapterContent?.chapterNumber}</p>
+              </div>
+
+              {/* Tabs */}
+              <div className="flex overflow-x-auto border-b border-emerald-400/20 bg-slate-800/50">
+                {[
+                  { id: 'notes', label: '📜 Notes' },
+                  { id: 'timeline', label: '📅 Timeline' },
+                  { id: '1mark', label: '✏️ 1 Mark' },
+                  { id: '3mark', label: '📝 3 Mark' },
+                  { id: '5mark', label: '📖 5 Mark' },
+                  { id: 'terms', label: '📚 Key Terms' },
+                  { id: 'people', label: '👤 Key People' },
+                  { id: 'summary', label: '🧠 Summary' },
+                  { id: 'quiz', label: '❓ Quiz' }
+                ].map((tab) => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id)}
+                    className={`px-4 py-4 font-bold whitespace-nowrap border-b-2 transition ${
+                      activeTab === tab.id
+                        ? 'border-emerald-400 text-emerald-300'
+                        : 'border-transparent text-slate-400 hover:text-emerald-300'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Tab Content */}
+              <div className="p-8">
+                {activeTab === 'notes' && (
+                  <div>
+                    <h3 className="text-2xl font-bold text-white mb-6">📜 Chapter Notes</h3>
+                    <div className="prose prose-invert max-w-none">
+                      <p className="text-slate-300 leading-relaxed whitespace-pre-wrap">
+                        {chapterContent?.notes || 'No notes available for this chapter.'}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === 'timeline' && (
+                  <div>
+                    <h3 className="text-2xl font-bold text-white mb-6">📅 Timeline</h3>
+                    {chapterContent?.timeline && chapterContent.timeline.length > 0 ? (
+                      <div className="space-y-4">
+                        {chapterContent.timeline.map((event, idx) => (
+                          <div key={idx} className="bg-emerald-500/10 border border-emerald-400/30 rounded-lg p-4">
+                            <p className="text-emerald-300 font-bold">{event.year}</p>
+                            <p className="text-slate-300">{event.event}</p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-slate-400">No timeline data available.</p>
+                    )}
+                  </div>
+                )}
+
+                {activeTab === '1mark' && (
+                  <div>
+                    <h3 className="text-2xl font-bold text-white mb-6">✏️ 1 Mark Questions</h3>
+                    {chapterContent?.oneMarkQuestions && chapterContent.oneMarkQuestions.length > 0 ? (
+                      <div className="space-y-4">
+                        {chapterContent.oneMarkQuestions.map((q, idx) => (
+                          <div key={idx} className="bg-blue-500/10 border border-blue-400/30 rounded-lg p-4">
+                            <p className="text-white font-bold mb-2">{idx + 1}. {q}</p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-slate-400">No 1 mark questions available.</p>
+                    )}
+                  </div>
+                )}
+
+                {activeTab === '3mark' && (
+                  <div>
+                    <h3 className="text-2xl font-bold text-white mb-6">📝 3 Mark Questions</h3>
+                    {chapterContent?.threeMarkQuestions && chapterContent.threeMarkQuestions.length > 0 ? (
+                      <div className="space-y-4">
+                        {chapterContent.threeMarkQuestions.map((q, idx) => (
+                          <div key={idx} className="bg-purple-500/10 border border-purple-400/30 rounded-lg p-4">
+                            <p className="text-white font-bold mb-2">{idx + 1}. {q}</p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-slate-400">No 3 mark questions available.</p>
+                    )}
+                  </div>
+                )}
+
+                {activeTab === '5mark' && (
+                  <div>
+                    <h3 className="text-2xl font-bold text-white mb-6">📖 5 Mark Questions</h3>
+                    {chapterContent?.fiveMarkQuestions && chapterContent.fiveMarkQuestions.length > 0 ? (
+                      <div className="space-y-4">
+                        {chapterContent.fiveMarkQuestions.map((q, idx) => (
+                          <div key={idx} className="bg-pink-500/10 border border-pink-400/30 rounded-lg p-4">
+                            <p className="text-white font-bold mb-2">{idx + 1}. {q}</p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-slate-400">No 5 mark questions available.</p>
+                    )}
+                  </div>
+                )}
+
+                {activeTab === 'terms' && (
+                  <div>
+                    <h3 className="text-2xl font-bold text-white mb-6">📚 Key Terms</h3>
+                    {chapterContent?.keyTerms && Object.keys(chapterContent.keyTerms).length > 0 ? (
+                      <div className="space-y-4">
+                        {Object.entries(chapterContent.keyTerms).map(([term, definition], idx) => (
+                          <div key={idx} className="bg-yellow-500/10 border border-yellow-400/30 rounded-lg p-4">
+                            <p className="text-yellow-300 font-bold mb-1">{term}</p>
+                            <p className="text-slate-300">{definition}</p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-slate-400">No key terms available.</p>
+                    )}
+                  </div>
+                )}
+
+                {activeTab === 'people' && (
+                  <div>
+                    <h3 className="text-2xl font-bold text-white mb-6">👤 Key People</h3>
+                    {chapterContent?.keyPeople && Object.keys(chapterContent.keyPeople).length > 0 ? (
+                      <div className="space-y-4">
+                        {Object.entries(chapterContent.keyPeople).map(([person, details], idx) => (
+                          <div key={idx} className="bg-orange-500/10 border border-orange-400/30 rounded-lg p-4">
+                            <p className="text-orange-300 font-bold mb-1">{person}</p>
+                            <p className="text-slate-300">{details}</p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-slate-400">No key people available.</p>
+                    )}
+                  </div>
+                )}
+
+                {activeTab === 'summary' && (
+                  <div>
+                    <h3 className="text-2xl font-bold text-white mb-6">🧠 Summary</h3>
+                    <div className="prose prose-invert max-w-none">
+                      <p className="text-slate-300 leading-relaxed whitespace-pre-wrap">
+                        {chapterContent?.summary || 'No summary available for this chapter.'}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === 'quiz' && (
+                  <div>
+                    <h3 className="text-2xl font-bold text-white mb-6">❓ Quiz - {chapterContent?.title}</h3>
+                    {chapterContent?.quiz && chapterContent.quiz.length > 0 ? (
+                      <div className="space-y-6">
+                        {chapterContent.quiz.map((question, qIdx) => (
+                          <div key={qIdx} className="bg-emerald-500/10 border border-emerald-400/30 rounded-lg p-6">
+                            <p className="text-white font-bold mb-4">Q{qIdx + 1}. {question.question}</p>
+                            <div className="space-y-2">
+                              {question.options.map((option, oIdx) => (
+                                <label key={oIdx} className="flex items-center gap-3 cursor-pointer group">
+                                  <input
+                                    type="radio"
+                                    name={`q${qIdx}`}
+                                    value={oIdx}
+                                    checked={quizAnswers[qIdx] == oIdx}
+                                    onChange={() => !quizSubmitted && setQuizAnswers({ ...quizAnswers, [qIdx]: oIdx })}
+                                    disabled={quizSubmitted}
+                                    className="w-4 h-4 text-emerald-400"
+                                  />
+                                  <span className={`text-slate-300 group-hover:text-slate-200 transition ${
+                                    quizSubmitted && oIdx === question.correctAnswer ? 'text-green-300 font-bold' : ''
+                                  } ${
+                                    quizSubmitted && quizAnswers[qIdx] == oIdx && oIdx !== question.correctAnswer ? 'text-red-300 font-bold' : ''
+                                  }`}>
+                                    {option}
+                                  </span>
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+
+                        {!quizSubmitted && (
+                          <button
+                            onClick={handleQuizSubmit}
+                            className="w-full bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-600 hover:to-emerald-700 text-white font-bold py-4 rounded-xl transition"
+                          >
+                            Submit Quiz
+                          </button>
+                        )}
+
+                        {quizSubmitted && (
+                          <div className="bg-blue-500/20 border border-blue-400/50 rounded-lg p-6 text-center">
+                            <p className="text-blue-300 text-lg font-bold mb-2">Quiz Submitted!</p>
+                            <p className="text-white text-3xl font-black mb-2">
+                              {quizScore} / {chapterContent.quiz.length}
+                            </p>
+                            <p className="text-blue-300">
+                              Score: {Math.round((quizScore / chapterContent.quiz.length) * 100)}%
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-slate-400">No quiz available for this chapter.</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Footer */}
+      <div className="bg-slate-800/50 border-t border-emerald-400/20 mt-20">
+        <div className="max-w-7xl mx-auto px-6 py-8 text-center text-slate-400 text-sm">
+          © 2026 Pankaj Digital Academy. Built for SEBA Excellence.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ===== ADMIN DASHBOARD =====
+function AdminDashboard({ user }) {
+  const [activeSection, setActiveSection] = useState('dashboard');
+  const [users, setUsers] = useState([]);
+  const [classes, setClasses] = useState([]);
+  const [subjects, setSubjects] = useState([]);
+  const [chapters, setChapters] = useState([]);
+  const [selectedClass, setSelectedClass] = useState('');
+  const [selectedSubject, setSelectedSubject] = useState('');
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [formData, setFormData] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [editingId, setEditingId] = useState(null);
+
+  // Load users
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, 'users'), (snapshot) => {
+      setUsers(snapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() }))
+        .filter(u => u.role === 'student')
+      );
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Load classes
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, 'classes'), (snapshot) => {
+      setClasses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Load subjects
+  useEffect(() => {
+    if (selectedClass) {
+      const q = query(collection(db, 'subjects'), where('classId', '==', selectedClass));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        setSubjects(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      });
+      return () => unsubscribe();
+    }
+  }, [selectedClass]);
+
+  // Load chapters
+  useEffect(() => {
+    if (selectedSubject) {
+      const q = query(collection(db, 'chapters'), where('subjectId', '==', selectedSubject));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        setChapters(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      });
+      return () => unsubscribe();
+    }
+  }, [selectedSubject]);
+
+  // Block/Unblock user
+  const toggleBlockUser = async (userId, currentStatus) => {
+    try {
+      await updateDoc(doc(db, 'users', userId), {
+        isBlocked: !currentStatus
+      });
+      alert(currentStatus ? 'User unblocked' : 'User blocked');
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+  };
+
+  // Delete user
+  const deleteUser = async (userId) => {
+    if (window.confirm('Are you sure? This action cannot be undone.')) {
+      try {
+        await deleteDoc(doc(db, 'users', userId));
+        alert('User deleted');
+      } catch (err) {
+        alert('Error: ' + err.message);
+      }
+    }
+  };
+
+  // Add/Update chapter
+  const handleSaveChapter = async () => {
+    if (!formData.title || !selectedSubject) {
+      alert('Please fill all required fields');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const chapterData = {
+        ...formData,
+        subjectId: selectedSubject,
+        class: selectedClass,
+        subject: subjects.find(s => s.id === selectedSubject)?.name,
+        updatedAt: new Date()
+      };
+
+      if (editingId) {
+        await updateDoc(doc(db, 'chapters', editingId), chapterData);
+        alert('Chapter updated successfully');
+      } else {
+        await addDoc(collection(db, 'chapters'), chapterData);
+        alert('Chapter added successfully');
+      }
+
+      setFormData({});
+      setShowAddForm(false);
+      setEditingId(null);
+    } catch (err) {
+      alert('Error: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Delete chapter
+  const deleteChapter = async (chapterId) => {
+    if (window.confirm('Are you sure? This action cannot be undone.')) {
+      try {
+        await deleteDoc(doc(db, 'chapters', chapterId));
+        alert('Chapter deleted');
+      } catch (err) {
+        alert('Error: ' + err.message);
+      }
+    }
+  };
+
+  // Start editing chapter
+  const startEditChapter = (chapter) => {
+    setFormData(chapter);
+    setEditingId(chapter.id);
+    setShowAddForm(true);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('adminSession');
+    window.location.reload();
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-900 to-slate-900">
+      {/* Header */}
+      <div className="bg-slate-800/80 backdrop-blur-xl border-b border-red-400/20 sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="text-3xl">⚙️</span>
+            <h1 className="text-2xl font-black text-red-400">Admin Dashboard</h1>
+          </div>
+          <button
+            onClick={handleLogout}
+            className="bg-red-600/80 hover:bg-red-700 text-white px-6 py-2 rounded-lg font-bold transition"
+          >
+            Logout
+          </button>
+        </div>
+      </div>
+
+      <div className="max-w-7xl mx-auto px-6 py-8">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-6 mb-10">
+          {[
+            { id: 'dashboard', label: '📊 Dashboard', icon: '📊' },
+            { id: 'users', label: '👥 Users', icon: '👥' },
+            { id: 'content', label: '📚 Content', icon: '📚' }
+          ].map((nav) => (
+            <button
+              key={nav.id}
+              onClick={() => {
+                setActiveSection(nav.id);
+                setShowAddForm(false);
+              }}
+              className={`p-6 rounded-xl border-2 transition ${
+                activeSection === nav.id
+                  ? 'bg-red-500/20 border-red-400 text-red-300'
+                  : 'bg-slate-800/50 border-slate-700 text-slate-300 hover:border-red-400/50'
+              }`}
+            >
+              <div className="text-3xl mb-2">{nav.icon}</div>
+              <p className="font-bold">{nav.label}</p>
+            </button>
+          ))}
+        </div>
+
+        {/* Dashboard Section */}
+        {activeSection === 'dashboard' && (
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="bg-blue-500/10 border border-blue-400/30 rounded-xl p-6">
+                <p className="text-blue-300 text-sm font-bold mb-2">TOTAL STUDENTS</p>
+                <p className="text-4xl font-black text-blue-300">{users.length}</p>
+              </div>
+              <div className="bg-emerald-500/10 border border-emerald-400/30 rounded-xl p-6">
+                <p className="text-emerald-300 text-sm font-bold mb-2">TOTAL CHAPTERS</p>
+                <p className="text-4xl font-black text-emerald-300">{chapters.length}</p>
+              </div>
+              <div className="bg-purple-500/10 border border-purple-400/30 rounded-xl p-6">
+                <p className="text-purple-300 text-sm font-bold mb-2">TOTAL SUBJECTS</p>
+                <p className="text-4xl font-black text-purple-300">{subjects.length}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Users Section */}
+        {activeSection === 'users' && (
+          <div>
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-2xl font-bold text-white">👥 User Management</h2>
+              <input
+                type="text"
+                placeholder="Search by name or email..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="bg-slate-700/50 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-red-400"
+              />
+            </div>
+
+            <div className="bg-slate-800/50 backdrop-blur border border-slate-700 rounded-xl overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-slate-700 bg-slate-800/80">
+                      <th className="px-6 py-4 text-left text-slate-300 font-bold">Name</th>
+                      <th className="px-6 py-4 text-left text-slate-300 font-bold">Email</th>
+                      <th className="px-6 py-4 text-left text-slate-300 font-bold">Provider</th>
+                      <th className="px-6 py-4 text-left text-slate-300 font-bold">Last Login</th>
+                      <th className="px-6 py-4 text-left text-slate-300 font-bold">Status</th>
+                      <th className="px-6 py-4 text-left text-slate-300 font-bold">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {users
+                      .filter(u => 
+                        u.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                        u.email?.toLowerCase().includes(searchTerm.toLowerCase())
+                      )
+                      .map((userItem) => (
+                        <tr key={userItem.id} className="border-b border-slate-700 hover:bg-slate-700/30 transition">
+                          <td className="px-6 py-4 text-slate-300">{userItem.name || 'N/A'}</td>
+                          <td className="px-6 py-4 text-slate-300 text-sm">{userItem.email}</td>
+                          <td className="px-6 py-4 text-slate-300">{userItem.provider || 'email'}</td>
+                          <td className="px-6 py-4 text-slate-300 text-sm">
+                            {userItem.lastLogin ? new Date(userItem.lastLogin.toDate()).toLocaleDateString() : 'Never'}
+                          </td>
+                          <td className="px-6 py-4">
+                            <span className={`px-3 py-1 rounded-full text-xs font-bold ${
+                              userItem.isBlocked 
+                                ? 'bg-red-500/20 text-red-300' 
+                                : 'bg-green-500/20 text-green-300'
+                            }`}>
+                              {userItem.isBlocked ? 'Blocked' : 'Active'}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 space-x-2">
+                            <button
+                              onClick={() => toggleBlockUser(userItem.id, userItem.isBlocked)}
+                              className={`px-3 py-1 rounded text-xs font-bold transition ${
+                                userItem.isBlocked
+                                  ? 'bg-green-600 hover:bg-green-700 text-white'
+                                  : 'bg-yellow-600 hover:bg-yellow-700 text-white'
+                              }`}
+                            >
+                              {userItem.isBlocked ? 'Unblock' : 'Block'}
+                            </button>
+                            <button
+                              onClick={() => deleteUser(userItem.id)}
+                              className="px-3 py-1 rounded text-xs font-bold bg-red-600 hover:bg-red-700 text-white transition"
+                            >
+                              Delete
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+              {users.filter(u => 
+                u.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                u.email?.toLowerCase().includes(searchTerm.toLowerCase())
+              ).length === 0 && (
+                <div className="p-8 text-center text-slate-400">
+                  No students found.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Content Management Section */}
+        {activeSection === 'content' && (
+          <div>
+            <h2 className="text-2xl font-bold text-white mb-6">📚 Content Management System</h2>
+
+            {/* Class & Subject Selection */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+              <div>
+                <label className="block text-slate-300 font-bold mb-2">Select Class</label>
+                <select
+                  value={selectedClass}
+                  onChange={(e) => {
+                    setSelectedClass(e.target.value);
+                    setSelectedSubject('');
+                  }}
+                  className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-red-400"
+                >
+                  <option value="">-- Choose Class --</option>
+                  <option value="9">Class 9</option>
+                  <option value="10">Class 10</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-slate-300 font-bold mb-2">Select Subject</label>
+                <select
+                  value={selectedSubject}
+                  onChange={(e) => setSelectedSubject(e.target.value)}
+                  disabled={!selectedClass}
+                  className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-red-400 disabled:opacity-50"
+                >
+                  <option value="">-- Choose Subject --</option>
+                  {['English', 'Hindi', 'Science', 'Social Science'].map((subj) => (
+                    <option key={subj} value={subj}>{subj}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Add Chapter Button */}
+            <button
+              onClick={() => {
+                if (!selectedSubject) {
+                  alert('Please select a subject first');
+                  return;
+                }
+                setShowAddForm(!showAddForm);
+                setEditingId(null);
+                setFormData({});
+              }}
+              className="mb-6 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white font-bold px-6 py-3 rounded-lg transition"
+            >
+              {showAddForm ? '✕ Cancel' : '+ Add New Chapter'}
+            </button>
+
+            {/* Add/Edit Form */}
+            {showAddForm && (
+              <div className="bg-slate-800/50 backdrop-blur border border-slate-700 rounded-xl p-8 mb-8">
+                <h3 className="text-xl font-bold text-white mb-6">
+                  {editingId ? '✏️ Edit Chapter' : '📝 Add New Chapter'}
+                </h3>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                  <input
+                    type="text"
+                    placeholder="Chapter Title"
+                    value={formData.title || ''}
+                    onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                    className="bg-slate-700/50 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-red-400"
+                  />
+                  <input
+                    type="number"
+                    placeholder="Chapter Number"
+                    value={formData.chapterNumber || ''}
+                    onChange={(e) => setFormData({ ...formData, chapterNumber: e.target.value })}
+                    className="bg-slate-700/50 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-red-400"
+                  />
+                </div>
+
+                <textarea
+                  placeholder="Chapter Notes (Long form content)"
+                  value={formData.notes || ''}
+                  onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+                  rows="4"
+                  className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-red-400 mb-4"
+                />
+
+                <textarea
+                  placeholder="Summary"
+                  value={formData.summary || ''}
+                  onChange={(e) => setFormData({ ...formData, summary: e.target.value })}
+                  rows="3"
+                  className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-red-400 mb-4"
+                />
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                  <div>
+                    <label className="block text-slate-300 font-bold mb-2">1 Mark Questions (comma separated)</label>
+                    <textarea
+                      placeholder="Q1, Q2, Q3"
+                      value={(formData.oneMarkQuestions || []).join(', ')}
+                      onChange={(e) => setFormData({ ...formData, oneMarkQuestions: e.target.value.split(',').map(q => q.trim()) })}
+                      rows="3"
+                      className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-red-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-300 font-bold mb-2">3 Mark Questions (comma separated)</label>
+                    <textarea
+                      placeholder="Q1, Q2, Q3"
+                      value={(formData.threeMarkQuestions || []).join(', ')}
+                      onChange={(e) => setFormData({ ...formData, threeMarkQuestions: e.target.value.split(',').map(q => q.trim()) })}
+                      rows="3"
+                      className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-red-400"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                  <div>
+                    <label className="block text-slate-300 font-bold mb-2">5 Mark Questions (comma separated)</label>
+                    <textarea
+                      placeholder="Q1, Q2, Q3"
+                      value={(formData.fiveMarkQuestions || []).join(', ')}
+                      onChange={(e) => setFormData({ ...formData, fiveMarkQuestions: e.target.value.split(',').map(q => q.trim()) })}
+                      rows="3"
+                      className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-red-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-300 font-bold mb-2">Key Terms (JSON format)</label>
+                    <textarea
+                      placeholder='{"term": "definition"}'
+                      value={typeof formData.keyTerms === 'object' ? JSON.stringify(formData.keyTerms || {}) : (formData.keyTerms || '{}')}
+                      onChange={(e) => {
+                        try {
+                          setFormData({ ...formData, keyTerms: JSON.parse(e.target.value) });
+                        } catch {
+                          setFormData({ ...formData, keyTerms: e.target.value });
+                        }
+                      }}
+                      rows="3"
+                      className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-red-400"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                  <div>
+                    <label className="block text-slate-300 font-bold mb-2">Key People (JSON format)</label>
+                    <textarea
+                      placeholder='{"person": "details"}'
+                      value={typeof formData.keyPeople === 'object' ? JSON.stringify(formData.keyPeople || {}) : (formData.keyPeople || '{}')}
+                      onChange={(e) => {
+                        try {
+                          setFormData({ ...formData, keyPeople: JSON.parse(e.target.value) });
+                        } catch {
+                          setFormData({ ...formData, keyPeople: e.target.value });
+                        }
+                      }}
+                      rows="3"
+                      className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-red-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-300 font-bold mb-2">Timeline (JSON format)</label>
+                    <textarea
+                      placeholder='[{"year": "2020", "event": "description"}]'
+                      value={Array.isArray(formData.timeline) ? JSON.stringify(formData.timeline || []) : (formData.timeline || '[]')}
+                      onChange={(e) => {
+                        try {
+                          setFormData({ ...formData, timeline: JSON.parse(e.target.value) });
+                        } catch {
+                          setFormData({ ...formData, timeline: e.target.value });
+                        }
+                      }}
+                      rows="3"
+                      className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-red-400"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-slate-300 font-bold mb-2">Quiz (JSON format)</label>
+                  <textarea
+                    placeholder='[{"question": "Q1?", "options": ["A", "B", "C", "D"], "correctAnswer": 0}]'
+                    value={Array.isArray(formData.quiz) ? JSON.stringify(formData.quiz || []) : (formData.quiz || '[]')}
+                    onChange={(e) => {
+                      try {
+                        setFormData({ ...formData, quiz: JSON.parse(e.target.value) });
+                      } catch {
+                        setFormData({ ...formData, quiz: e.target.value });
+                      }
+                    }}
+                    rows="6"
+                    className="w-full bg-slate-700/50 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-red-400 mb-6"
+                  />
+                </div>
+
+                <div className="flex gap-4">
+                  <button
+                    onClick={handleSaveChapter}
+                    disabled={loading}
+                    className="flex-1 bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-700 hover:to-emerald-800 text-white font-bold py-3 rounded-lg transition disabled:opacity-50"
+                  >
+                    {loading ? 'Saving...' : (editingId ? '✓ Update Chapter' : '+ Save Chapter')}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowAddForm(false);
+                      setFormData({});
+                      setEditingId(null);
+                    }}
+                    className="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 rounded-lg transition"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Chapters List */}
+            {selectedSubject && (
+              <div>
+                <h3 className="text-xl font-bold text-white mb-4">
+                  📖 Chapters - {subjects.find(s => s.id === selectedSubject)?.name || selectedSubject}
+                </h3>
+
+                {chapters.length === 0 ? (
+                  <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-12 text-center text-slate-400">
+                    No chapters found. Add one to get started!
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {chapters.map((chapter) => (
+                      <div key={chapter.id} className="bg-slate-800/50 border border-slate-700 rounded-lg p-6 hover:border-red-400/50 transition">
+                        <h4 className="text-white font-bold mb-2">{chapter.title}</h4>
+                        <p className="text-slate-400 text-sm mb-4">Chapter {chapter.chapterNumber}</p>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => startEditChapter(chapter)}
+                            className="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm font-bold transition"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => deleteChapter(chapter.id)}
+                            className="flex-1 bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded text-sm font-bold transition"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Footer */}
+      <div className="bg-slate-800/50 border-t border-slate-700 mt-20">
+        <div className="max-w-7xl mx-auto px-6 py-8 text-center text-slate-400 text-sm">
+          © 2026 Pankaj Digital Academy. Built for SEBA Excellence.
+        </div>
+      </div>
+    </div>
+  );
+}
